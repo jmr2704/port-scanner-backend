@@ -1,0 +1,15 @@
+{
+  "name": "port-scanner-backend",
+  "version": "1.0.0",
+  "description": "API para escanear portas de um IP",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.0",
+    "portscanner": "^2.1.1"
+  }
+}
