@@ -65,10 +65,18 @@ app.post("/add-monitor", async (req, res) => {
 app.get("/monitors", async (req, res) => {
   const dbMonitors = await pool.query("SELECT * FROM monitors");
   const updated = [];
+
   for (const m of dbMonitors.rows) {
     const status = await checkPort(m.ip, m.port);
-    updated.push({ ...m, status });
+    updated.push({
+      id: m.id,
+      name: m.name,     // Nome do computador
+      ip: m.ip,
+      port: m.port,
+      status: status
+    });
   }
+
   res.json(updated);
 });
 
@@ -81,9 +89,9 @@ app.delete("/monitor/:id", async (req, res) => {
 
 // Adicionar ou atualizar IP/porta por computador
 app.post("/register-monitor", async (req, res) => {
-  const { computerId, ip, port } = req.body;
-  if (!computerId || !ip || !port) {
-    return res.status(400).json({ error: "computerId, ip e port são obrigatórios" });
+  const { computerId, name, ip, port } = req.body;
+  if (!computerId || !name || !ip || !port) {
+    return res.status(400).json({ error: "computerId, name, ip e port são obrigatórios" });
   }
 
   // Verifica se já existe registro para esse computador
@@ -91,12 +99,18 @@ app.post("/register-monitor", async (req, res) => {
 
   if (exists.rows.length > 0) {
     // Atualiza registro existente
-    await pool.query("UPDATE monitors SET ip = $1, port = $2 WHERE id = $3", [ip, port, computerId]);
-    return res.json({ message: "Monitor atualizado", id: computerId, ip, port });
+    await pool.query(
+      "UPDATE monitors SET name = $1, ip = $2, port = $3 WHERE id = $4",
+      [name, ip, port, computerId]
+    );
+    return res.json({ message: "Monitor atualizado", id: computerId, name, ip, port });
   } else {
-    // Cria novo registro com ID fixo
-    await pool.query("INSERT INTO monitors (id, ip, port) VALUES ($1, $2, $3)", [computerId, ip, port]);
-    return res.json({ message: "Monitor registrado", id: computerId, ip, port });
+    // Cria novo registro
+    await pool.query(
+      "INSERT INTO monitors (id, name, ip, port) VALUES ($1, $2, $3, $4)",
+      [computerId, name, ip, port]
+    );
+    return res.json({ message: "Monitor registrado", id: computerId, name, ip, port });
   }
 });
 
