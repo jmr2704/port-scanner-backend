@@ -89,7 +89,12 @@ app.delete("/monitor/:id", async (req, res) => {
 
 // Adicionar ou atualizar IP/porta por computador
 app.post("/register-monitor", async (req, res) => {
-  const { computerId, name, ip, port } = req.body;
+  let { computerId, name, ip, port } = req.body;
+  
+  // Forçar id e port como número
+  computerId = parseInt(computerId, 10);
+  port = parseInt(port, 10);
+
   if (!computerId || !name || !ip || !port) {
     return res.status(400).json({ error: "computerId, name, ip e port são obrigatórios" });
   }
