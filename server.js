@@ -79,6 +79,27 @@ app.delete("/monitor/:id", async (req, res) => {
   res.json({ message: "Monitor removido" });
 });
 
+// Adicionar ou atualizar IP/porta por computador
+app.post("/register-monitor", async (req, res) => {
+  const { computerId, ip, port } = req.body;
+  if (!computerId || !ip || !port) {
+    return res.status(400).json({ error: "computerId, ip e port são obrigatórios" });
+  }
+
+  // Verifica se já existe registro para esse computador
+  const exists = await pool.query("SELECT * FROM monitors WHERE id = $1", [computerId]);
+
+  if (exists.rows.length > 0) {
+    // Atualiza registro existente
+    await pool.query("UPDATE monitors SET ip = $1, port = $2 WHERE id = $3", [ip, port, computerId]);
+    return res.json({ message: "Monitor atualizado", id: computerId, ip, port });
+  } else {
+    // Cria novo registro com ID fixo
+    await pool.query("INSERT INTO monitors (id, ip, port) VALUES ($1, $2, $3)", [computerId, ip, port]);
+    return res.json({ message: "Monitor registrado", id: computerId, ip, port });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Servidor rodando na porta ${PORT}`);
