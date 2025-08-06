@@ -270,7 +270,7 @@ app.patch("/monitor/:id/toggle-public", authenticateToken, async (req, res) => {
     
     // Verificar se o monitor pertence ao usuário
     const checkResult = await pool.query(
-      "SELECT * FROM monitors WHERE id = $1::uuid AND user_id = $2::uuid",
+      "SELECT * FROM monitors WHERE id = $1 AND user_id = $2::uuid",
       [id, req.user.userId]
     );
     
@@ -283,7 +283,7 @@ app.patch("/monitor/:id/toggle-public", authenticateToken, async (req, res) => {
     const newStatus = !currentStatus;
     
     const result = await pool.query(
-      "UPDATE monitors SET is_public = $1 WHERE id = $2::uuid AND user_id = $3::uuid RETURNING *",
+      "UPDATE monitors SET is_public = $1 WHERE id = $2 AND user_id = $3::uuid RETURNING *",
       [newStatus, id, req.user.userId]
     );
     
@@ -304,7 +304,7 @@ app.delete("/monitor/:id", authenticateToken, async (req, res) => {
     
     // Verificar se o monitor pertence ao usuário
     const result = await pool.query(
-      "DELETE FROM monitors WHERE id = $1::uuid AND user_id = $2::uuid RETURNING *",
+      "DELETE FROM monitors WHERE id = $1 AND user_id = $2::uuid RETURNING *",
       [id, req.user.userId]
     );
     
