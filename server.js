@@ -543,6 +543,54 @@ app.get("/admin/stats", authenticateToken, requireAdminRole, async (req, res) =>
   }
 });
 
+// ===== ROTA TEMPORÁRIA PARA TORNAR PRIMEIRO USUÁRIO ADMIN =====
+// REMOVER APÓS USO!
+app.post('/make-first-admin', async (req, res) => {
+  try {
+    console.log('🔍 Buscando primeiro usuário para tornar ADMIN...');
+    
+    // Buscar o primeiro usuário (por data de criação)
+    const result = await pool.query(`
+      SELECT id, email, name, role 
+      FROM users 
+      ORDER BY created_at ASC 
+      LIMIT 1
+    `);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Nenhum usuário encontrado' });
+    }
+    
+    const user = result.rows[0];
+    console.log(`👤 Primeiro usuário: ${user.name} (${user.email})`);
+    
+    if (user.role === 'ADMIN') {
+      return res.json({ 
+        message: 'Usuário já é ADMIN',
+        user: { name: user.name, email: user.email, role: user.role }
+      });
+    }
+    
+    // Alterar role para ADMIN
+    await pool.query(`
+      UPDATE users 
+      SET role = 'ADMIN' 
+      WHERE id = $1
+    `, [user.id]);
+    
+    console.log(`🎉 ${user.name} agora é ADMIN!`);
+    
+    res.json({ 
+      message: 'Usuário alterado para ADMIN com sucesso!',
+      user: { name: user.name, email: user.email, role: 'ADMIN' }
+    });
+    
+  } catch (error) {
+    console.error('❌ Erro ao alterar usuário:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Servidor rodando na porta ${PORT}`);
