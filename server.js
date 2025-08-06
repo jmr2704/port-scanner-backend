@@ -59,7 +59,7 @@ async function checkPort(ip, port) {
     )
   `);
 
-  // Tabela de monitors (atualizada com user_id)
+  // Tabela de monitors (atualizada com user_id e is_public)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS monitors (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -67,9 +67,21 @@ async function checkPort(ip, port) {
       name TEXT,
       ip TEXT NOT NULL,
       port INTEGER NOT NULL,
+      is_public BOOLEAN DEFAULT FALSE,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  
+  // Adicionar coluna is_public se não existir (para bancos existentes)
+  try {
+    await pool.query(`
+      ALTER TABLE monitors 
+      ADD COLUMN IF NOT EXISTS is_public BOOLEAN DEFAULT FALSE
+    `);
+  } catch (error) {
+    // Ignora erro se coluna já existe
+    console.log('Coluna is_public já existe ou erro ao adicionar:', error.message);
+  }
 })();
 
 // ===== ROTAS DE AUTENTICAÇÃO =====
@@ -198,14 +210,14 @@ app.post("/scan", async (req, res) => {
 // Adicionar IP:Porta para monitoramento (protegida)
 app.post("/add-monitor", authenticateToken, async (req, res) => {
   try {
-    const { ip, port, name } = req.body;
+    const { ip, port, name, is_public } = req.body;
     if (!ip || !port) {
       return res.status(400).json({ error: "IP e porta são obrigatórios" });
     }
     
     const result = await pool.query(
-      "INSERT INTO monitors (user_id, name, ip, port) VALUES ($1, $2, $3, $4) RETURNING *",
-      [req.user.userId, name || `${ip}:${port}`, ip, port]
+      "INSERT INTO monitors (user_id, name, ip, port, is_public) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+      [req.user.userId, name || `${ip}:${port}`, ip, port, is_public || false]
     );
     res.json({ message: "Monitor adicionado", monitor: result.rows[0] });
   } catch (error) {
@@ -217,10 +229,15 @@ app.post("/add-monitor", authenticateToken, async (req, res) => {
 // Retornar todos monitores do usuário com status atualizado (protegida)
 app.get("/monitors", authenticateToken, async (req, res) => {
   try {
-    const dbMonitors = await pool.query(
-      "SELECT * FROM monitors WHERE user_id = $1 ORDER BY created_at DESC",
-      [req.user.userId]
-    );
+    // Buscar monitores públicos E monitores privados do usuário
+    const dbMonitors = await pool.query(`
+      SELECT m.*, u.name as owner_name 
+      FROM monitors m 
+      LEFT JOIN users u ON m.user_id = u.id
+      WHERE m.is_public = TRUE OR m.user_id = $1 
+      ORDER BY m.is_public DESC, m.created_at DESC
+    `, [req.user.userId]);
+    
     const updated = [];
 
     for (const m of dbMonitors.rows) {
@@ -231,6 +248,9 @@ app.get("/monitors", authenticateToken, async (req, res) => {
         ip: m.ip,
         port: m.port,
         status: status,
+        is_public: m.is_public,
+        owner_name: m.owner_name,
+        is_owner: m.user_id === req.user.userId,
         created_at: m.created_at
       });
     }
@@ -238,6 +258,40 @@ app.get("/monitors", authenticateToken, async (req, res) => {
     res.json(updated);
   } catch (error) {
     console.error("Erro ao buscar monitors:", error);
+    res.status(500).json({ error: "Erro interno do servidor" });
+  }
+});
+
+// Alternar status público/privado de um monitor (protegida)
+app.patch("/monitor/:id/toggle-public", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Verificar se o monitor pertence ao usuário
+    const checkResult = await pool.query(
+      "SELECT * FROM monitors WHERE id = $1 AND user_id = $2",
+      [id, req.user.userId]
+    );
+    
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: "Monitor não encontrado ou não pertence ao usuário" });
+    }
+    
+    // Alternar o status is_public
+    const currentStatus = checkResult.rows[0].is_public;
+    const newStatus = !currentStatus;
+    
+    const result = await pool.query(
+      "UPDATE monitors SET is_public = $1 WHERE id = $2 AND user_id = $3 RETURNING *",
+      [newStatus, id, req.user.userId]
+    );
+    
+    res.json({ 
+      message: `Monitor ${newStatus ? 'tornado público' : 'tornado privado'}`,
+      monitor: result.rows[0]
+    });
+  } catch (error) {
+    console.error("Erro ao alternar status do monitor:", error);
     res.status(500).json({ error: "Erro interno do servidor" });
   }
 });
