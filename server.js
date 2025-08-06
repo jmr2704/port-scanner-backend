@@ -184,6 +184,7 @@ app.get("/verify-token", authenticateToken, (req, res) => {
 // Rota para escanear portas pontualmente
 app.post("/scan", async (req, res) => {
   const { ip, ports } = req.body;
+  console.log(JSON.stringfy(req.body));
   if (!ip || !Array.isArray(ports) || ports.length === 0) {
     return res.status(400).json({ error: "IP e lista de portas são obrigatórios" });
   }
