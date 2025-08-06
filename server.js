@@ -22,13 +22,45 @@ const authenticateToken = (req, res, next) => {
     return res.status(401).json({ error: 'Token de acesso requerido' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
+  jwt.verify(token, JWT_SECRET, async (err, user) => {
     if (err) {
       return res.status(403).json({ error: 'Token inválido' });
     }
-    req.user = user;
-    next();
+    
+    // Buscar dados completos do usuário incluindo role
+    try {
+      const userResult = await pool.query('SELECT id, email, name, role FROM users WHERE id = $1::uuid', [user.userId]);
+      if (userResult.rows.length === 0) {
+        return res.status(403).json({ error: 'Usuário não encontrado' });
+      }
+      
+      req.user = {
+        ...user,
+        role: userResult.rows[0].role,
+        name: userResult.rows[0].name
+      };
+      next();
+    } catch (error) {
+      console.error('Erro ao buscar dados do usuário:', error);
+      return res.status(500).json({ error: 'Erro interno do servidor' });
+    }
   });
+};
+
+// Middleware para verificar se usuário pode criar/editar (USER ou ADMIN)
+const requireUserRole = (req, res, next) => {
+  if (req.user.role === 'VIEWER') {
+    return res.status(403).json({ error: 'Permissão insuficiente. Necessário role USER ou ADMIN.' });
+  }
+  next();
+};
+
+// Middleware para verificar se usuário é ADMIN
+const requireAdminRole = (req, res, next) => {
+  if (req.user.role !== 'ADMIN') {
+    return res.status(403).json({ error: 'Permissão insuficiente. Necessário role ADMIN.' });
+  }
+  next();
 };
 
 // Configuração do Postgres
@@ -48,16 +80,28 @@ async function checkPort(ip, port) {
 
 // Criar tabelas se não existirem
 (async () => {
-  // Tabela de usuários
+  // Criar tabela de usuários se não existir
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      email TEXT UNIQUE NOT NULL,
-      password TEXT NOT NULL,
-      name TEXT NOT NULL,
+      email VARCHAR(255) UNIQUE NOT NULL,
+      password VARCHAR(255) NOT NULL,
+      name VARCHAR(255) NOT NULL,
+      role VARCHAR(20) DEFAULT 'USER' CHECK (role IN ('VIEWER', 'USER', 'ADMIN')),
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  
+  // Adicionar coluna role se não existir (migração)
+  try {
+    await pool.query(`
+      ALTER TABLE users 
+      ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'USER' 
+      CHECK (role IN ('VIEWER', 'USER', 'ADMIN'))
+    `);
+  } catch (error) {
+    // Coluna já existe, ignorar erro
+  }
 
   // Tabela de monitors (atualizada com user_id e is_public)
   await pool.query(`
@@ -89,7 +133,7 @@ async function checkPort(ip, port) {
 // Rota de registro
 app.post("/register", async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password, role = 'USER' } = req.body;
 
     if (!name || !email || !password) {
       return res.status(400).json({ error: "Nome, email e senha são obrigatórios" });
@@ -97,6 +141,12 @@ app.post("/register", async (req, res) => {
 
     if (password.length < 6) {
       return res.status(400).json({ error: "Senha deve ter pelo menos 6 caracteres" });
+    }
+
+    // Verificar se role é válida
+    const validRoles = ['VIEWER', 'USER', 'ADMIN'];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({ error: "Role deve ser VIEWER, USER ou ADMIN" });
     }
 
     // Verificar se usuário já existe
@@ -111,8 +161,8 @@ app.post("/register", async (req, res) => {
 
     // Criar usuário
     const result = await pool.query(
-      "INSERT INTO users (name, email, password) VALUES ($1, $2, $3) RETURNING id, name, email, created_at",
-      [name, email, hashedPassword]
+      "INSERT INTO users (name, email, password, role) VALUES ($1, $2, $3, $4) RETURNING id, name, email, role, created_at",
+      [name, email, hashedPassword, role]
     );
 
     const user = result.rows[0];
@@ -131,6 +181,7 @@ app.post("/register", async (req, res) => {
         id: user.id,
         name: user.name,
         email: user.email,
+        role: user.role,
         created_at: user.created_at
       }
     });
@@ -177,6 +228,7 @@ app.post("/login", async (req, res) => {
         id: user.id,
         name: user.name,
         email: user.email,
+        role: user.role,
         created_at: user.created_at
       }
     });
@@ -208,8 +260,8 @@ app.post("/scan", async (req, res) => {
   res.json({ ip, status });
 });
 
-// Adicionar IP:Porta para monitoramento (protegida)
-app.post("/add-monitor", authenticateToken, async (req, res) => {
+// Adicionar novo monitor (protegida - apenas USER e ADMIN)
+app.post("/add-monitor", authenticateToken, requireUserRole, async (req, res) => {
   try {
     const { ip, port, name, is_public } = req.body;
     if (!ip || !port) {
@@ -227,17 +279,29 @@ app.post("/add-monitor", authenticateToken, async (req, res) => {
   }
 });
 
-// Retornar todos monitores do usuário com status atualizado (protegida)
+// Retornar monitores com base no role do usuário (protegida)
 app.get("/monitors", authenticateToken, async (req, res) => {
   try {
-    // Buscar monitores públicos E monitores privados do usuário
-    const dbMonitors = await pool.query(`
-      SELECT m.*, u.name as owner_name 
-      FROM monitors m 
-      LEFT JOIN users u ON m.user_id = u.id
-      WHERE m.is_public = TRUE OR m.user_id = $1::uuid 
-      ORDER BY m.is_public DESC, m.created_at DESC
-    `, [req.user.userId]);
+    let dbMonitors;
+    
+    if (req.user.role === 'ADMIN') {
+      // ADMIN vê todos os monitores
+      dbMonitors = await pool.query(`
+        SELECT m.*, u.name as owner_name 
+        FROM monitors m 
+        LEFT JOIN users u ON m.user_id = u.id
+        ORDER BY m.is_public DESC, m.created_at DESC
+      `);
+    } else {
+      // VIEWER e USER veem monitores públicos + próprios privados
+      dbMonitors = await pool.query(`
+        SELECT m.*, u.name as owner_name 
+        FROM monitors m 
+        LEFT JOIN users u ON m.user_id = u.id
+        WHERE m.is_public = TRUE OR m.user_id = $1::uuid 
+        ORDER BY m.is_public DESC, m.created_at DESC
+      `, [req.user.userId]);
+    }
     
     const updated = [];
 
@@ -263,29 +327,49 @@ app.get("/monitors", authenticateToken, async (req, res) => {
   }
 });
 
-// Alternar status público/privado de um monitor (protegida)
-app.patch("/monitor/:id/toggle-public", authenticateToken, async (req, res) => {
+// Alternar status público/privado de um monitor (protegida - USER para próprios, ADMIN para todos)
+app.patch("/monitor/:id/toggle-public", authenticateToken, requireUserRole, async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Verificar se o monitor pertence ao usuário
-    const checkResult = await pool.query(
-      "SELECT * FROM monitors WHERE id = $1 AND user_id = $2::uuid",
-      [id, req.user.userId]
-    );
+    let checkResult;
+    if (req.user.role === 'ADMIN') {
+      // ADMIN pode alterar qualquer monitor
+      checkResult = await pool.query(
+        "SELECT * FROM monitors WHERE id = $1",
+        [id]
+      );
+    } else {
+      // USER só pode alterar próprios monitores
+      checkResult = await pool.query(
+        "SELECT * FROM monitors WHERE id = $1 AND user_id = $2::uuid",
+        [id, req.user.userId]
+      );
+    }
     
     if (checkResult.rows.length === 0) {
-      return res.status(404).json({ error: "Monitor não encontrado ou não pertence ao usuário" });
+      const errorMsg = req.user.role === 'ADMIN' ? "Monitor não encontrado" : "Monitor não encontrado ou não pertence ao usuário";
+      return res.status(404).json({ error: errorMsg });
     }
     
     // Alternar o status is_public
     const currentStatus = checkResult.rows[0].is_public;
     const newStatus = !currentStatus;
     
-    const result = await pool.query(
-      "UPDATE monitors SET is_public = $1 WHERE id = $2 AND user_id = $3::uuid RETURNING *",
-      [newStatus, id, req.user.userId]
-    );
+    let result;
+    if (req.user.role === 'ADMIN') {
+      // ADMIN pode alterar qualquer monitor
+      result = await pool.query(
+        "UPDATE monitors SET is_public = $1 WHERE id = $2 RETURNING *",
+        [newStatus, id]
+      );
+    } else {
+      // USER só pode alterar próprios monitores
+      result = await pool.query(
+        "UPDATE monitors SET is_public = $1 WHERE id = $2 AND user_id = $3::uuid RETURNING *",
+        [newStatus, id, req.user.userId]
+      );
+    }
     
     res.json({ 
       message: `Monitor ${newStatus ? 'tornado público' : 'tornado privado'}`,
@@ -297,19 +381,29 @@ app.patch("/monitor/:id/toggle-public", authenticateToken, async (req, res) => {
   }
 });
 
-// Remover monitor (protegida)
-app.delete("/monitor/:id", authenticateToken, async (req, res) => {
+// Remover monitor (protegida - USER para próprios, ADMIN para todos)
+app.delete("/monitor/:id", authenticateToken, requireUserRole, async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Verificar se o monitor pertence ao usuário
-    const result = await pool.query(
-      "DELETE FROM monitors WHERE id = $1 AND user_id = $2::uuid RETURNING *",
-      [id, req.user.userId]
-    );
+    let result;
+    if (req.user.role === 'ADMIN') {
+      // ADMIN pode excluir qualquer monitor
+      result = await pool.query(
+        "DELETE FROM monitors WHERE id = $1 RETURNING *",
+        [id]
+      );
+    } else {
+      // USER só pode excluir próprios monitores
+      result = await pool.query(
+        "DELETE FROM monitors WHERE id = $1 AND user_id = $2::uuid RETURNING *",
+        [id, req.user.userId]
+      );
+    }
     
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Monitor não encontrado ou não pertence ao usuário" });
+      const errorMsg = req.user.role === 'ADMIN' ? "Monitor não encontrado" : "Monitor não encontrado ou não pertence ao usuário";
+      return res.status(404).json({ error: errorMsg });
     }
     
     res.json({ message: "Monitor removido" });
@@ -348,6 +442,104 @@ app.post("/register-monitor", async (req, res) => {
       [computerId, name, ip, port]
     );
     return res.json({ message: "Monitor registrado", id: computerId, name, ip, port });
+  }
+});
+
+// ===== ROTAS DE GERENCIAMENTO DE USUÁRIOS (APENAS ADMIN) =====
+
+// Listar todos os usuários (apenas ADMIN)
+app.get("/admin/users", authenticateToken, requireAdminRole, async (req, res) => {
+  try {
+    const users = await pool.query(`
+      SELECT id, name, email, role, created_at,
+             (SELECT COUNT(*) FROM monitors WHERE user_id = users.id) as monitor_count
+      FROM users 
+      ORDER BY created_at DESC
+    `);
+    
+    res.json(users.rows);
+  } catch (error) {
+    console.error("Erro ao buscar usuários:", error);
+    res.status(500).json({ error: "Erro interno do servidor" });
+  }
+});
+
+// Alterar role de um usuário (apenas ADMIN)
+app.patch("/admin/user/:id/role", authenticateToken, requireAdminRole, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { role } = req.body;
+    
+    // Verificar se role é válida
+    const validRoles = ['VIEWER', 'USER', 'ADMIN'];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({ error: "Role deve ser VIEWER, USER ou ADMIN" });
+    }
+    
+    const result = await pool.query(
+      "UPDATE users SET role = $1 WHERE id = $2::uuid RETURNING id, name, email, role",
+      [role, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Usuário não encontrado" });
+    }
+    
+    res.json({ 
+      message: `Role do usuário alterada para ${role}`,
+      user: result.rows[0]
+    });
+  } catch (error) {
+    console.error("Erro ao alterar role:", error);
+    res.status(500).json({ error: "Erro interno do servidor" });
+  }
+});
+
+// Excluir usuário (apenas ADMIN)
+app.delete("/admin/user/:id", authenticateToken, requireAdminRole, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Primeiro, excluir todos os monitores do usuário
+    await pool.query("DELETE FROM monitors WHERE user_id = $1::uuid", [id]);
+    
+    // Depois, excluir o usuário
+    const result = await pool.query(
+      "DELETE FROM users WHERE id = $1::uuid RETURNING name, email",
+      [id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Usuário não encontrado" });
+    }
+    
+    res.json({ 
+      message: `Usuário ${result.rows[0].name} excluído com sucesso`
+    });
+  } catch (error) {
+    console.error("Erro ao excluir usuário:", error);
+    res.status(500).json({ error: "Erro interno do servidor" });
+  }
+});
+
+// Obter estatísticas do sistema (apenas ADMIN)
+app.get("/admin/stats", authenticateToken, requireAdminRole, async (req, res) => {
+  try {
+    const stats = await pool.query(`
+      SELECT 
+        (SELECT COUNT(*) FROM users) as total_users,
+        (SELECT COUNT(*) FROM users WHERE role = 'ADMIN') as admin_users,
+        (SELECT COUNT(*) FROM users WHERE role = 'USER') as regular_users,
+        (SELECT COUNT(*) FROM users WHERE role = 'VIEWER') as viewer_users,
+        (SELECT COUNT(*) FROM monitors) as total_monitors,
+        (SELECT COUNT(*) FROM monitors WHERE is_public = true) as public_monitors,
+        (SELECT COUNT(*) FROM monitors WHERE is_public = false) as private_monitors
+    `);
+    
+    res.json(stats.rows[0]);
+  } catch (error) {
+    console.error("Erro ao buscar estatísticas:", error);
+    res.status(500).json({ error: "Erro interno do servidor" });
   }
 });
 
