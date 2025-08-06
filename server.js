@@ -217,7 +217,7 @@ app.post("/add-monitor", authenticateToken, async (req, res) => {
     }
     
     const result = await pool.query(
-      "INSERT INTO monitors (user_id, name, ip, port, is_public) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+      "INSERT INTO monitors (user_id, name, ip, port, is_public) VALUES ($1::uuid, $2, $3, $4, $5) RETURNING *",
       [req.user.userId, name || `${ip}:${port}`, ip, port, is_public || false]
     );
     res.json({ message: "Monitor adicionado", monitor: result.rows[0] });
@@ -235,7 +235,7 @@ app.get("/monitors", authenticateToken, async (req, res) => {
       SELECT m.*, u.name as owner_name 
       FROM monitors m 
       LEFT JOIN users u ON m.user_id = u.id
-      WHERE m.is_public = TRUE OR m.user_id = $1 
+      WHERE m.is_public = TRUE OR m.user_id = $1::uuid 
       ORDER BY m.is_public DESC, m.created_at DESC
     `, [req.user.userId]);
     
@@ -270,7 +270,7 @@ app.patch("/monitor/:id/toggle-public", authenticateToken, async (req, res) => {
     
     // Verificar se o monitor pertence ao usuário
     const checkResult = await pool.query(
-      "SELECT * FROM monitors WHERE id = $1 AND user_id = $2",
+      "SELECT * FROM monitors WHERE id = $1::uuid AND user_id = $2::uuid",
       [id, req.user.userId]
     );
     
@@ -283,7 +283,7 @@ app.patch("/monitor/:id/toggle-public", authenticateToken, async (req, res) => {
     const newStatus = !currentStatus;
     
     const result = await pool.query(
-      "UPDATE monitors SET is_public = $1 WHERE id = $2 AND user_id = $3 RETURNING *",
+      "UPDATE monitors SET is_public = $1 WHERE id = $2::uuid AND user_id = $3::uuid RETURNING *",
       [newStatus, id, req.user.userId]
     );
     
@@ -304,7 +304,7 @@ app.delete("/monitor/:id", authenticateToken, async (req, res) => {
     
     // Verificar se o monitor pertence ao usuário
     const result = await pool.query(
-      "DELETE FROM monitors WHERE id = $1 AND user_id = $2 RETURNING *",
+      "DELETE FROM monitors WHERE id = $1::uuid AND user_id = $2::uuid RETURNING *",
       [id, req.user.userId]
     );
     
