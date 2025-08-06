@@ -193,7 +193,7 @@ app.post("/scan", async (req, res) => {
     const status = await checkPort(ip, port);
     results.push({ port, status });
   
-  res.json({ ip, results });
+  res.json({ ip, status });
 });
 
 // Adicionar IP:Porta para monitoramento (protegida)
