@@ -320,19 +320,23 @@ app.get("/monitors", authenticateToken, async (req, res) => {
 
     for (const m of dbMonitors.rows) {
       const status = await checkPort(m.ip, m.port);
-      updated.push({
+      const monitorData = {
         id: m.id,
         name: m.name,
         ip: m.ip,
         port: m.port,
         status: status,
         is_public: m.is_public,
+        is_wakeable: m.is_wakeable,
         owner_name: m.owner_name,
         is_owner: m.user_id === req.user.userId,
         created_at: m.created_at
-      });
+      };
+      console.log(`Monitor ${m.name}: is_wakeable = ${m.is_wakeable}`);
+      updated.push(monitorData);
     }
 
+    console.log('Enviando monitors para frontend:', updated.length, 'monitores');
     res.json(updated);
   } catch (error) {
     console.error("Erro ao buscar monitors:", error);
