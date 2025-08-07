@@ -866,7 +866,7 @@ async function createNotification(userId, monitorId, type, title, message) {
   try {
     await pool.query(`
       INSERT INTO notifications (user_id, monitor_id, type, title, message)
-      VALUES ($1::uuid, $2::uuid, $3, $4, $5)
+      VALUES ($1::uuid, $2::integer, $3, $4, $5)
     `, [userId, monitorId, type, title, message]);
   } catch (error) {
     console.error('Erro ao criar notificação:', error);
