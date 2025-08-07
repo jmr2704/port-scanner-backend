@@ -476,10 +476,25 @@ app.post("/wake-server/:id", authenticateToken, requireUserRole, async (req, res
     const externalIp = externalIpResult.rows[0].ip;
     const wakeUrl = `http://${externalIp}:1880/wakepc`;
     
+    console.log(`=== WAKE-ON-LAN DEBUG ===`);
+    console.log(`Monitor: ${monitor.name} (ID: ${monitor.id})`);
+    console.log(`IP Externo encontrado: ${externalIp}`);
+    console.log(`URL Wake: ${wakeUrl}`);
+    console.log(`Fazendo requisição POST para: ${wakeUrl}`);
+    
     // Fazer requisição para acordar o servidor
     try {
       const response = await new Promise((resolve, reject) => {
-        const request = http.get(wakeUrl, { timeout: 10000 }, (response) => {
+        const url = new URL(wakeUrl);
+        const options = {
+          hostname: url.hostname,
+          port: url.port,
+          path: url.pathname,
+          method: 'POST',
+          timeout: 10000
+        };
+        
+        const request = http.request(options, (response) => {
           let data = '';
           response.on('data', (chunk) => {
             data += chunk;
@@ -497,7 +512,15 @@ app.post("/wake-server/:id", authenticateToken, requireUserRole, async (req, res
           request.destroy();
           reject(new Error('Request timeout'));
         });
+        
+        // Finalizar a requisição POST
+        request.end();
       });
+      
+      console.log(`Resposta da requisição wake:`);
+      console.log(`Status: ${response.status}`);
+      console.log(`Data: ${response.data}`);
+      console.log(`=== FIM WAKE DEBUG ===`);
       
       res.json({ 
         message: `Comando de ligar enviado para ${monitor.name}`,
