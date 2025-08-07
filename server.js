@@ -139,6 +139,45 @@ async function checkPort(ip, port) {
     // Ignora erro se coluna já existe
     console.log('Coluna is_wakeable já existe ou erro ao adicionar:', error.message);
   }
+
+  // Adicionar coluna last_status para rastrear mudanças de status
+  try {
+    await pool.query(`
+      ALTER TABLE monitors 
+      ADD COLUMN IF NOT EXISTS last_status BOOLEAN DEFAULT NULL,
+      ADD COLUMN IF NOT EXISTS last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    `);
+  } catch (error) {
+    console.log('Colunas de status já existem ou erro ao adicionar:', error.message);
+  }
+
+  // Tabela de notificações
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+      monitor_id UUID REFERENCES monitors(id) ON DELETE CASCADE,
+      type VARCHAR(50) NOT NULL DEFAULT 'server_offline',
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      is_read BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Tabela de configurações de notificação por usuário
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS notification_settings (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID REFERENCES users(id) ON DELETE CASCADE UNIQUE,
+      enabled BOOLEAN DEFAULT TRUE,
+      server_offline BOOLEAN DEFAULT TRUE,
+      server_online BOOLEAN DEFAULT TRUE,
+      push_notifications BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
 })();
 
 // ===== ROTAS DE AUTENTICAÇÃO =====
@@ -722,6 +761,252 @@ app.post('/make-first-admin', async (req, res) => {
   } catch (error) {
     console.error('❌ Erro ao alterar usuário:', error);
     res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// ===== SISTEMA DE NOTIFICAÇÕES =====
+
+// Função para criar notificação
+async function createNotification(userId, monitorId, type, title, message) {
+  try {
+    await pool.query(`
+      INSERT INTO notifications (user_id, monitor_id, type, title, message)
+      VALUES ($1::uuid, $2::uuid, $3, $4, $5)
+    `, [userId, monitorId, type, title, message]);
+  } catch (error) {
+    console.error('Erro ao criar notificação:', error);
+  }
+}
+
+// Função para obter usuários que devem receber notificação de um monitor
+async function getUsersForNotification(monitorId) {
+  try {
+    const result = await pool.query(`
+      SELECT DISTINCT u.id, u.name, u.email, ns.enabled, ns.server_offline, ns.server_online
+      FROM users u
+      LEFT JOIN notification_settings ns ON u.id = ns.user_id
+      LEFT JOIN monitors m ON m.id = $1::uuid
+      WHERE (
+        u.role = 'ADMIN' OR 
+        (m.user_id = u.id) OR 
+        (m.is_public = true AND u.role IN ('USER', 'VIEWER'))
+      )
+      AND (ns.enabled IS NULL OR ns.enabled = true)
+    `, [monitorId]);
+    
+    return result.rows;
+  } catch (error) {
+    console.error('Erro ao buscar usuários para notificação:', error);
+    return [];
+  }
+}
+
+// Sistema de monitoramento contínuo
+async function monitorServers() {
+  try {
+    const monitors = await pool.query('SELECT * FROM monitors ORDER BY name');
+    
+    for (const monitor of monitors.rows) {
+      try {
+        // Verificar status atual do servidor
+        const isOnline = await new Promise((resolve) => {
+          portscanner.checkPortStatus(monitor.port, monitor.ip, (error, status) => {
+            resolve(status === 'open');
+          });
+        });
+        
+        const previousStatus = monitor.last_status;
+        const statusChanged = previousStatus !== null && previousStatus !== isOnline;
+        
+        // Atualizar status no banco
+        await pool.query(`
+          UPDATE monitors 
+          SET last_status = $1, last_checked = CURRENT_TIMESTAMP 
+          WHERE id = $2
+        `, [isOnline, monitor.id]);
+        
+        // Se houve mudança de status, enviar notificações
+        if (statusChanged) {
+          const users = await getUsersForNotification(monitor.id);
+          const statusText = isOnline ? 'online' : 'offline';
+          const emoji = isOnline ? '✅' : '❌';
+          
+          const title = `Servidor ${statusText.toUpperCase()}`;
+          const message = `${emoji} O servidor "${monitor.name}" (${monitor.ip}:${monitor.port}) ficou ${statusText}.`;
+          
+          for (const user of users) {
+            // Verificar configurações do usuário
+            const shouldNotify = isOnline ? 
+              (user.server_online !== false) : 
+              (user.server_offline !== false);
+              
+            if (shouldNotify) {
+              await createNotification(
+                user.id, 
+                monitor.id, 
+                `server_${statusText}`, 
+                title, 
+                message
+              );
+            }
+          }
+          
+          console.log(`📡 Notificações enviadas: ${monitor.name} ficou ${statusText}`);
+        }
+        
+      } catch (error) {
+        console.error(`Erro ao monitorar ${monitor.name}:`, error);
+      }
+    }
+    
+  } catch (error) {
+    console.error('Erro no sistema de monitoramento:', error);
+  }
+}
+
+// Iniciar monitoramento a cada 30 segundos
+setInterval(monitorServers, 30000);
+
+// API: Buscar notificações do usuário
+app.get("/notifications", authenticateToken, async (req, res) => {
+  try {
+    const { page = 1, limit = 20, unread_only = false } = req.query;
+    const offset = (page - 1) * limit;
+    
+    let query = `
+      SELECT n.*, m.name as monitor_name, m.ip, m.port
+      FROM notifications n
+      LEFT JOIN monitors m ON n.monitor_id = m.id
+      WHERE n.user_id = $1::uuid
+    `;
+    
+    const params = [req.user.userId];
+    
+    if (unread_only === 'true') {
+      query += ` AND n.is_read = false`;
+    }
+    
+    query += ` ORDER BY n.created_at DESC LIMIT $2 OFFSET $3`;
+    params.push(limit, offset);
+    
+    const notifications = await pool.query(query, params);
+    
+    // Contar total de notificações não lidas
+    const unreadCount = await pool.query(`
+      SELECT COUNT(*) as count 
+      FROM notifications 
+      WHERE user_id = $1::uuid AND is_read = false
+    `, [req.user.userId]);
+    
+    res.json({
+      notifications: notifications.rows,
+      unread_count: parseInt(unreadCount.rows[0].count),
+      page: parseInt(page),
+      limit: parseInt(limit)
+    });
+    
+  } catch (error) {
+    console.error("Erro ao buscar notificações:", error);
+    res.status(500).json({ error: "Erro interno do servidor" });
+  }
+});
+
+// API: Marcar notificação como lida
+app.patch("/notifications/:id/read", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const result = await pool.query(`
+      UPDATE notifications 
+      SET is_read = true 
+      WHERE id = $1::uuid AND user_id = $2::uuid
+      RETURNING *
+    `, [id, req.user.userId]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Notificação não encontrada" });
+    }
+    
+    res.json({ message: "Notificação marcada como lida" });
+    
+  } catch (error) {
+    console.error("Erro ao marcar notificação:", error);
+    res.status(500).json({ error: "Erro interno do servidor" });
+  }
+});
+
+// API: Marcar todas as notificações como lidas
+app.patch("/notifications/read-all", authenticateToken, async (req, res) => {
+  try {
+    await pool.query(`
+      UPDATE notifications 
+      SET is_read = true 
+      WHERE user_id = $1::uuid AND is_read = false
+    `, [req.user.userId]);
+    
+    res.json({ message: "Todas as notificações foram marcadas como lidas" });
+    
+  } catch (error) {
+    console.error("Erro ao marcar todas as notificações:", error);
+    res.status(500).json({ error: "Erro interno do servidor" });
+  }
+});
+
+// API: Configurações de notificação do usuário
+app.get("/notification-settings", authenticateToken, async (req, res) => {
+  try {
+    let settings = await pool.query(`
+      SELECT * FROM notification_settings WHERE user_id = $1::uuid
+    `, [req.user.userId]);
+    
+    // Se não existir, criar configuração padrão
+    if (settings.rows.length === 0) {
+      await pool.query(`
+        INSERT INTO notification_settings (user_id) VALUES ($1::uuid)
+      `, [req.user.userId]);
+      
+      settings = await pool.query(`
+        SELECT * FROM notification_settings WHERE user_id = $1::uuid
+      `, [req.user.userId]);
+    }
+    
+    res.json(settings.rows[0]);
+    
+  } catch (error) {
+    console.error("Erro ao buscar configurações:", error);
+    res.status(500).json({ error: "Erro interno do servidor" });
+  }
+});
+
+// API: Atualizar configurações de notificação
+app.patch("/notification-settings", authenticateToken, async (req, res) => {
+  try {
+    const { enabled, server_offline, server_online, push_notifications } = req.body;
+    
+    const result = await pool.query(`
+      UPDATE notification_settings 
+      SET enabled = COALESCE($2, enabled),
+          server_offline = COALESCE($3, server_offline),
+          server_online = COALESCE($4, server_online),
+          push_notifications = COALESCE($5, push_notifications),
+          updated_at = CURRENT_TIMESTAMP
+      WHERE user_id = $1::uuid
+      RETURNING *
+    `, [req.user.userId, enabled, server_offline, server_online, push_notifications]);
+    
+    if (result.rows.length === 0) {
+      // Criar se não existir
+      await pool.query(`
+        INSERT INTO notification_settings (user_id, enabled, server_offline, server_online, push_notifications)
+        VALUES ($1::uuid, $2, $3, $4, $5)
+      `, [req.user.userId, enabled ?? true, server_offline ?? true, server_online ?? true, push_notifications ?? true]);
+    }
+    
+    res.json({ message: "Configurações atualizadas com sucesso" });
+    
+  } catch (error) {
+    console.error("Erro ao atualizar configurações:", error);
+    res.status(500).json({ error: "Erro interno do servidor" });
   }
 });
 
