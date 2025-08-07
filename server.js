@@ -239,6 +239,40 @@ async function checkPort(ip, port) {
   } catch (error) {
     console.log('Erro ao criar tabela notification_settings:', error.message);
   }
+
+  // Tabela de tokens de push notification por dispositivo
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS push_tokens (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL,
+        device_token VARCHAR(255) UNIQUE NOT NULL,
+        device_type VARCHAR(20) DEFAULT 'unknown',
+        device_name VARCHAR(100),
+        app_version VARCHAR(20),
+        is_active BOOLEAN DEFAULT TRUE,
+        last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    // Adicionar foreign key para users
+    try {
+      await pool.query(`
+        ALTER TABLE push_tokens 
+        ADD CONSTRAINT fk_push_tokens_user_id 
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      `);
+      console.log('✅ Foreign key push_tokens -> users criada com sucesso');
+    } catch (error) {
+      console.log('Foreign key para push_tokens já existe ou erro:', error.message);
+    }
+    
+    console.log('✅ Tabela push_tokens criada com sucesso');
+  } catch (error) {
+    console.log('Erro ao criar tabela push_tokens:', error.message);
+  }
 })();
 
 // ===== ROTAS DE AUTENTICAÇÃO =====
@@ -862,6 +896,49 @@ async function getUsersForNotification(monitorId) {
   }
 }
 
+// Função para enviar push notifications
+async function sendPushNotification(userId, notificationData) {
+  try {
+    // Buscar tokens ativos do usuário
+    const result = await pool.query(`
+      SELECT device_token, device_type 
+      FROM push_tokens 
+      WHERE user_id = $1::uuid AND is_active = true
+    `, [userId]);
+    
+    if (result.rows.length === 0) {
+      console.log(`Nenhum token ativo encontrado para usuário ${userId}`);
+      return;
+    }
+    
+    const { title, message, serverId, serverName, status } = notificationData;
+    
+    // Para cada token ativo, "enviar" notificação
+    // Como estamos usando notificações locais, apenas registramos no log
+    for (const token of result.rows) {
+      console.log(`📱 Push notification enviada:`);
+      console.log(`   Usuário: ${userId}`);
+      console.log(`   Device: ${token.device_type}`);
+      console.log(`   Token: ${token.device_token.substring(0, 20)}...`);
+      console.log(`   Título: ${title}`);
+      console.log(`   Mensagem: ${message}`);
+      console.log(`   Servidor: ${serverName} (${serverId})`);
+      console.log(`   Status: ${status}`);
+      console.log('   ---');
+    }
+    
+    // Atualizar last_used dos tokens
+    await pool.query(`
+      UPDATE push_tokens 
+      SET last_used = CURRENT_TIMESTAMP 
+      WHERE user_id = $1::uuid AND is_active = true
+    `, [userId]);
+    
+  } catch (error) {
+    console.error('Erro ao enviar push notification:', error);
+  }
+}
+
 // Sistema de monitoramento contínuo
 async function monitorServers() {
   try {
@@ -909,6 +986,17 @@ async function monitorServers() {
                 title, 
                 message
               );
+              
+              // Enviar push notification se habilitado
+              if (user.push_notifications !== false) {
+                await sendPushNotification(user.id, {
+                  title,
+                  message,
+                  serverId: monitor.id,
+                  serverName: monitor.name,
+                  status: statusText
+                });
+              }
             }
           }
           
@@ -1067,6 +1155,95 @@ app.patch("/notification-settings", authenticateToken, async (req, res) => {
     
   } catch (error) {
     console.error("Erro ao atualizar configurações:", error);
+    res.status(500).json({ error: "Erro interno do servidor" });
+  }
+});
+
+// ===== APIS DE PUSH NOTIFICATIONS =====
+
+// API: Registrar token de push notification
+app.post("/push-token", authenticateToken, async (req, res) => {
+  try {
+    const { device_token, device_type = 'unknown', device_name, app_version } = req.body;
+    
+    if (!device_token) {
+      return res.status(400).json({ error: "Token do dispositivo é obrigatório" });
+    }
+    
+    // Verificar se o token já existe para este usuário
+    const existingToken = await pool.query(`
+      SELECT id FROM push_tokens 
+      WHERE user_id = $1::uuid AND device_token = $2
+    `, [req.user.userId, device_token]);
+    
+    if (existingToken.rows.length > 0) {
+      // Atualizar token existente
+      await pool.query(`
+        UPDATE push_tokens 
+        SET device_type = $3,
+            device_name = $4,
+            app_version = $5,
+            is_active = TRUE,
+            last_used = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = $1::uuid AND device_token = $2
+      `, [req.user.userId, device_token, device_type, device_name, app_version]);
+      
+      res.json({ message: "Token atualizado com sucesso" });
+    } else {
+      // Criar novo token
+      await pool.query(`
+        INSERT INTO push_tokens (user_id, device_token, device_type, device_name, app_version)
+        VALUES ($1::uuid, $2, $3, $4, $5)
+      `, [req.user.userId, device_token, device_type, device_name, app_version]);
+      
+      res.json({ message: "Token registrado com sucesso" });
+    }
+    
+  } catch (error) {
+    console.error("Erro ao registrar token:", error);
+    res.status(500).json({ error: "Erro interno do servidor" });
+  }
+});
+
+// API: Remover token de push notification (logout)
+app.delete("/push-token", authenticateToken, async (req, res) => {
+  try {
+    const { device_token } = req.body;
+    
+    if (!device_token) {
+      return res.status(400).json({ error: "Token do dispositivo é obrigatório" });
+    }
+    
+    await pool.query(`
+      UPDATE push_tokens 
+      SET is_active = FALSE,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE user_id = $1::uuid AND device_token = $2
+    `, [req.user.userId, device_token]);
+    
+    res.json({ message: "Token removido com sucesso" });
+    
+  } catch (error) {
+    console.error("Erro ao remover token:", error);
+    res.status(500).json({ error: "Erro interno do servidor" });
+  }
+});
+
+// API: Listar tokens do usuário (para debug)
+app.get("/push-tokens", authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT device_token, device_type, device_name, app_version, is_active, last_used, created_at
+      FROM push_tokens 
+      WHERE user_id = $1::uuid
+      ORDER BY last_used DESC
+    `, [req.user.userId]);
+    
+    res.json(result.rows);
+    
+  } catch (error) {
+    console.error("Erro ao buscar tokens:", error);
     res.status(500).json({ error: "Erro interno do servidor" });
   }
 });
