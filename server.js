@@ -151,33 +151,75 @@ async function checkPort(ip, port) {
     console.log('Colunas de status já existem ou erro ao adicionar:', error.message);
   }
 
-  // Tabela de notificações
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS notifications (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-      monitor_id UUID REFERENCES monitors(id) ON DELETE CASCADE,
-      type VARCHAR(50) NOT NULL DEFAULT 'server_offline',
-      title TEXT NOT NULL,
-      message TEXT NOT NULL,
-      is_read BOOLEAN DEFAULT FALSE,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
+  // Tabela de notificações (criar sem foreign keys primeiro)
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID,
+        monitor_id UUID,
+        type VARCHAR(50) NOT NULL DEFAULT 'server_offline',
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        is_read BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    // Adicionar foreign keys se as tabelas existirem
+    try {
+      await pool.query(`
+        ALTER TABLE notifications 
+        ADD CONSTRAINT IF NOT EXISTS fk_notifications_user 
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      `);
+    } catch (error) {
+      console.log('Foreign key para users já existe ou erro:', error.message);
+    }
+    
+    try {
+      await pool.query(`
+        ALTER TABLE notifications 
+        ADD CONSTRAINT IF NOT EXISTS fk_notifications_monitor 
+        FOREIGN KEY (monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
+      `);
+    } catch (error) {
+      console.log('Foreign key para monitors já existe ou erro:', error.message);
+    }
+    
+  } catch (error) {
+    console.log('Erro ao criar tabela notifications:', error.message);
+  }
 
   // Tabela de configurações de notificação por usuário
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS notification_settings (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID REFERENCES users(id) ON DELETE CASCADE UNIQUE,
-      enabled BOOLEAN DEFAULT TRUE,
-      server_offline BOOLEAN DEFAULT TRUE,
-      server_online BOOLEAN DEFAULT TRUE,
-      push_notifications BOOLEAN DEFAULT TRUE,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS notification_settings (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID UNIQUE,
+        enabled BOOLEAN DEFAULT TRUE,
+        server_offline BOOLEAN DEFAULT TRUE,
+        server_online BOOLEAN DEFAULT TRUE,
+        push_notifications BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    // Adicionar foreign key para users
+    try {
+      await pool.query(`
+        ALTER TABLE notification_settings 
+        ADD CONSTRAINT IF NOT EXISTS fk_notification_settings_user 
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      `);
+    } catch (error) {
+      console.log('Foreign key para notification_settings já existe ou erro:', error.message);
+    }
+    
+  } catch (error) {
+    console.log('Erro ao criar tabela notification_settings:', error.message);
+  }
 })();
 
 // ===== ROTAS DE AUTENTICAÇÃO =====
