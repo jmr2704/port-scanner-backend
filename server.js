@@ -4,6 +4,8 @@ import portscanner from "portscanner";
 import pkg from "pg";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import https from "https";
+import http from "http";
 const { Pool } = pkg;
 
 const app = express();
@@ -125,6 +127,17 @@ async function checkPort(ip, port) {
   } catch (error) {
     // Ignora erro se coluna já existe
     console.log('Coluna is_public já existe ou erro ao adicionar:', error.message);
+  }
+  
+  // Adicionar coluna is_wakeable se não existir (para Wake-on-LAN)
+  try {
+    await pool.query(`
+      ALTER TABLE monitors 
+      ADD COLUMN IF NOT EXISTS is_wakeable BOOLEAN DEFAULT FALSE
+    `);
+  } catch (error) {
+    // Ignora erro se coluna já existe
+    console.log('Coluna is_wakeable já existe ou erro ao adicionar:', error.message);
   }
 })();
 
@@ -263,14 +276,14 @@ app.post("/scan", async (req, res) => {
 // Adicionar novo monitor (protegida - apenas USER e ADMIN)
 app.post("/add-monitor", authenticateToken, requireUserRole, async (req, res) => {
   try {
-    const { ip, port, name, is_public } = req.body;
+    const { ip, port, name, is_public, is_wakeable } = req.body;
     if (!ip || !port) {
       return res.status(400).json({ error: "IP e porta são obrigatórios" });
     }
     
     const result = await pool.query(
-      "INSERT INTO monitors (user_id, name, ip, port, is_public) VALUES ($1::uuid, $2, $3, $4, $5) RETURNING *",
-      [req.user.userId, name || `${ip}:${port}`, ip, port, is_public || false]
+      "INSERT INTO monitors (user_id, name, ip, port, is_public, is_wakeable) VALUES ($1::uuid, $2, $3, $4, $5, $6) RETURNING *",
+      [req.user.userId, name || `${ip}:${port}`, ip, port, is_public || false, is_wakeable || false]
     );
     res.json({ message: "Monitor adicionado", monitor: result.rows[0] });
   } catch (error) {
@@ -409,6 +422,100 @@ app.delete("/monitor/:id", authenticateToken, requireUserRole, async (req, res) 
     res.json({ message: "Monitor removido" });
   } catch (error) {
     console.error("Erro ao remover monitor:", error);
+    res.status(500).json({ error: "Erro interno do servidor" });
+  }
+});
+
+// Wake-on-LAN: Ligar servidor remoto (protegida - USER para próprios, ADMIN para todos)
+app.post("/wake-server/:id", authenticateToken, requireUserRole, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Verificar se o monitor existe e se o usuário tem permissão
+    let checkResult;
+    if (req.user.role === 'ADMIN') {
+      // ADMIN pode acordar qualquer monitor
+      checkResult = await pool.query(
+        "SELECT * FROM monitors WHERE id = $1",
+        [id]
+      );
+    } else {
+      // USER só pode acordar próprios monitores
+      checkResult = await pool.query(
+        "SELECT * FROM monitors WHERE id = $1 AND user_id = $2::uuid",
+        [id, req.user.userId]
+      );
+    }
+    
+    if (checkResult.rows.length === 0) {
+      const errorMsg = req.user.role === 'ADMIN' ? "Monitor não encontrado" : "Monitor não encontrado ou não pertence ao usuário";
+      return res.status(404).json({ error: errorMsg });
+    }
+    
+    const monitor = checkResult.rows[0];
+    
+    // Verificar se o monitor é acordável
+    if (!monitor.is_wakeable) {
+      return res.status(400).json({ error: "Este servidor não está configurado para ser acordado remotamente" });
+    }
+    
+    // Buscar o IP externo do computador ID 3 (assumindo que está na tabela monitors)
+    const externalIpResult = await pool.query(
+      "SELECT ip FROM monitors WHERE id = $1",
+      [3] // ID fixo do computador que tem o IP externo
+    );
+    
+    if (externalIpResult.rows.length === 0) {
+      return res.status(500).json({ error: "IP externo não encontrado (computador ID 3 não configurado)" });
+    }
+    
+    const externalIp = externalIpResult.rows[0].ip;
+    const wakeUrl = `http://${externalIp}:1880/wakepc`;
+    
+    // Fazer requisição para acordar o servidor
+    try {
+      const response = await new Promise((resolve, reject) => {
+        const request = http.get(wakeUrl, { timeout: 10000 }, (response) => {
+          let data = '';
+          response.on('data', (chunk) => {
+            data += chunk;
+          });
+          response.on('end', () => {
+            resolve({ status: response.statusCode, data });
+          });
+        });
+        
+        request.on('error', (error) => {
+          reject(error);
+        });
+        
+        request.on('timeout', () => {
+          request.destroy();
+          reject(new Error('Request timeout'));
+        });
+      });
+      
+      res.json({ 
+        message: `Comando de ligar enviado para ${monitor.name}`,
+        monitor: {
+          id: monitor.id,
+          name: monitor.name,
+          ip: monitor.ip,
+          port: monitor.port
+        },
+        wakeResponse: response.data,
+        wakeUrl: wakeUrl
+      });
+    } catch (wakeError) {
+      console.error("Erro ao enviar comando wake:", wakeError.message);
+      res.status(500).json({ 
+        error: "Falha ao enviar comando de ligar servidor",
+        details: wakeError.message
+      });
+    }
+    
+  } catch (error) {
+    console.error("Erro na rota wake-server:", error);
     res.status(500).json({ error: "Erro interno do servidor" });
   }
 });
