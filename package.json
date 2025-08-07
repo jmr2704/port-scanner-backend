@@ -10,9 +10,12 @@
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
+    "dotenv": "^17.2.1",
     "express": "^4.19.0",
     "jsonwebtoken": "^9.0.2",
+    "node-apn": "^3.0.0",
     "pg": "^8.16.3",
-    "portscanner": "^2.1.1"
+    "portscanner": "^2.1.1",
+    "web-push": "^3.6.7"
   }
 }

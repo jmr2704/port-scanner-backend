@@ -6,6 +6,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import https from "https";
 import http from "http";
+import pushService from "./pushService.js";
 const { Pool } = pkg;
 
 const app = express();
@@ -913,18 +914,29 @@ async function sendPushNotification(userId, notificationData) {
     
     const { title, message, serverId, serverName, status } = notificationData;
     
-    // Para cada token ativo, "enviar" notificação
-    // Como estamos usando notificações locais, apenas registramos no log
+    // Enviar push notifications reais usando nosso serviço
     for (const token of result.rows) {
-      console.log(`📱 Push notification enviada:`);
-      console.log(`   Usuário: ${userId}`);
-      console.log(`   Device: ${token.device_type}`);
-      console.log(`   Token: ${token.device_token.substring(0, 20)}...`);
-      console.log(`   Título: ${title}`);
-      console.log(`   Mensagem: ${message}`);
-      console.log(`   Servidor: ${serverName} (${serverId})`);
-      console.log(`   Status: ${status}`);
-      console.log('   ---');
+      try {
+        const success = await pushService.sendPushNotification(
+          token.device_token,
+          token.device_type,
+          {
+            title,
+            message,
+            serverId,
+            serverName,
+            status
+          }
+        );
+        
+        if (success) {
+          console.log(`✅ Push enviada com sucesso para ${token.device_type}`);
+        } else {
+          console.log(`⚠️ Push falhou para ${token.device_type}`);
+        }
+      } catch (error) {
+        console.error(`❌ Erro ao enviar push para ${token.device_type}:`, error);
+      }
     }
     
     // Atualizar last_used dos tokens
@@ -1249,6 +1261,14 @@ app.get("/push-tokens", authenticateToken, async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, "0.0.0.0", async () => {
   console.log(`Servidor rodando na porta ${PORT}`);
+  
+  // Inicializar serviço de push notifications
+  try {
+    await pushService.init();
+    console.log('🚀 Push notification service inicializado');
+  } catch (error) {
+    console.error('❌ Erro ao inicializar push service:', error);
+  }
 });
