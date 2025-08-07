@@ -178,9 +178,10 @@ async function checkPort(ip, port) {
     try {
       await pool.query(`
         ALTER TABLE notifications 
-        ADD CONSTRAINT IF NOT EXISTS fk_notifications_user 
+        ADD CONSTRAINT fk_notifications_user 
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       `);
+      console.log('✅ Foreign key notifications -> users criada');
     } catch (error) {
       console.log('Foreign key para users já existe ou erro:', error.message);
     }
@@ -188,9 +189,10 @@ async function checkPort(ip, port) {
     try {
       await pool.query(`
         ALTER TABLE notifications 
-        ADD CONSTRAINT IF NOT EXISTS fk_notifications_monitor 
+        ADD CONSTRAINT fk_notifications_monitor 
         FOREIGN KEY (monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
       `);
+      console.log('✅ Foreign key notifications -> monitors criada');
     } catch (error) {
       console.log('Foreign key para monitors já existe ou erro:', error.message);
     }
@@ -226,9 +228,10 @@ async function checkPort(ip, port) {
     try {
       await pool.query(`
         ALTER TABLE notification_settings 
-        ADD CONSTRAINT IF NOT EXISTS fk_notification_settings_user 
+        ADD CONSTRAINT fk_notification_settings_user 
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       `);
+      console.log('✅ Foreign key notification_settings -> users criada');
     } catch (error) {
       console.log('Foreign key para notification_settings já existe ou erro:', error.message);
     }
