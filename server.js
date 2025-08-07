@@ -152,12 +152,20 @@ async function checkPort(ip, port) {
   }
 
   // Tabela de notificações (criar sem foreign keys primeiro)
+  // Dropar tabela existente para recriar com tipos corretos
+  try {
+    await pool.query('DROP TABLE IF EXISTS notifications CASCADE');
+    console.log('✅ Tabela notifications dropada para recriação');
+  } catch (error) {
+    console.log('Erro ao dropar tabela notifications:', error.message);
+  }
+  
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS notifications (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id UUID,
-        monitor_id UUID,
+        monitor_id INTEGER,
         type VARCHAR(50) NOT NULL DEFAULT 'server_offline',
         title TEXT NOT NULL,
         message TEXT NOT NULL,
@@ -192,6 +200,14 @@ async function checkPort(ip, port) {
   }
 
   // Tabela de configurações de notificação por usuário
+  // Dropar tabela existente para recriar
+  try {
+    await pool.query('DROP TABLE IF EXISTS notification_settings CASCADE');
+    console.log('✅ Tabela notification_settings dropada para recriação');
+  } catch (error) {
+    console.log('Erro ao dropar tabela notification_settings:', error.message);
+  }
+  
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS notification_settings (
