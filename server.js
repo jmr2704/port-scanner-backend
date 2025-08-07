@@ -880,7 +880,7 @@ async function getUsersForNotification(monitorId) {
       SELECT DISTINCT u.id, u.name, u.email, ns.enabled, ns.server_offline, ns.server_online
       FROM users u
       LEFT JOIN notification_settings ns ON u.id = ns.user_id
-      LEFT JOIN monitors m ON m.id = $1::uuid
+      LEFT JOIN monitors m ON m.id = $1::integer
       WHERE (
         u.role = 'ADMIN' OR 
         (m.user_id = u.id) OR 
