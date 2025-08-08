@@ -610,7 +610,7 @@ app.post("/wake-server/:id", authenticateToken, requireUserRole, async (req, res
     
     const externalIp = externalIpResult.rows[0].ip;
     const serverName = monitor.name; // Nome do servidor para o comando WOL
-    const wakeUrl = `http://${externalIp}:4372/cgi/bin/wol?host="${serverName}"`;
+    const wakeUrl = `http://${externalIp}:4372/cgi-bin/wol?host=${serverName}`;
     
     console.log(`=== WAKE-ON-LAN DEBUG ===`);
     console.log(`Monitor: ${monitor.name} (ID: ${monitor.id})`);
