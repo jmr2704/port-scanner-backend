@@ -609,13 +609,15 @@ app.post("/wake-server/:id", authenticateToken, requireUserRole, async (req, res
     }
     
     const externalIp = externalIpResult.rows[0].ip;
-    const wakeUrl = `http://${externalIp}:1880/wakepc`;
+    const serverName = monitor.name; // Nome do servidor para o comando WOL
+    const wakeUrl = `http://${externalIp}:4372/cgi/bin/wol?host="${serverName}"`;
     
     console.log(`=== WAKE-ON-LAN DEBUG ===`);
     console.log(`Monitor: ${monitor.name} (ID: ${monitor.id})`);
     console.log(`IP Externo encontrado: ${externalIp}`);
+    console.log(`Servidor para acordar: ${serverName}`);
     console.log(`URL Wake: ${wakeUrl}`);
-    console.log(`Fazendo requisição POST para: ${wakeUrl}`);
+    console.log(`Fazendo requisição GET para: ${wakeUrl}`);
     
     // Fazer requisição para acordar o servidor
     try {
@@ -624,8 +626,8 @@ app.post("/wake-server/:id", authenticateToken, requireUserRole, async (req, res
         const options = {
           hostname: url.hostname,
           port: url.port,
-          path: url.pathname,
-          method: 'POST',
+          path: url.pathname + url.search, // Incluir query string
+          method: 'GET', // Mudado de POST para GET
           timeout: 10000
         };
         
@@ -648,7 +650,7 @@ app.post("/wake-server/:id", authenticateToken, requireUserRole, async (req, res
           reject(new Error('Request timeout'));
         });
         
-        // Finalizar a requisição POST
+        // Finalizar a requisição GET
         request.end();
       });
       
